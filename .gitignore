@@ -1,5 +1,8 @@
-.env
+
+data.db
+faiss_index/
 users.db
 __pycache__/
 *.pyc
+.env
 .history/
