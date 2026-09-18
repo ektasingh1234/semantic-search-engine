@@ -7,8 +7,14 @@ CSS_STYLES = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-* {
+html, body, [data-testid="stAppViewContainer"] {
+    background-color: #0b0f17 !important;
+    color: #f8fafc !important;
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+    overflow-x: hidden !important;
+}
+
+* {
     box-sizing: border-box;
 }
 
@@ -20,9 +26,10 @@ CSS_STYLES = """
 
 /* Container Spacing */
 .main .block-container {
-    padding-top: 1.5rem !important;
+    padding-top: 1.25rem !important;
     padding-bottom: 3rem !important;
     max-width: 1050px !important;
+    margin: 0 auto !important;
 }
 
 /* Sidebar Canvas */
@@ -38,36 +45,37 @@ CSS_STYLES = """
 .sidebar-header {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 0.5rem 0 1.25rem 0;
+    gap: 10px;
+    padding: 0.25rem 0 0.85rem 0;
     border-bottom: 1px solid #1e293b;
-    margin-bottom: 1.25rem;
+    margin-bottom: 1rem;
 }
 
 .sidebar-brand {
-    font-size: 1.1rem;
+    font-size: 1.05rem;
     font-weight: 700;
     color: #f8fafc !important;
     letter-spacing: -0.02em;
 }
 
 .sidebar-sub {
-    font-size: 0.75rem;
+    font-size: 0.725rem;
     color: #64748b !important;
 }
 
-/* Clean Sidebar Buttons */
+/* Clean Compact Sidebar Buttons */
 [data-testid="stSidebar"] .stButton > button {
     background-color: transparent !important;
     color: #94a3b8 !important;
     border: 1px solid transparent !important;
     border-radius: 6px !important;
     font-weight: 500 !important;
-    font-size: 0.875rem !important;
+    font-size: 0.85rem !important;
     text-align: left !important;
-    padding: 0.55rem 0.85rem !important;
-    margin-bottom: 0.25rem !alignment;
+    padding: 0.45rem 0.75rem !important;
+    margin-bottom: 0.2rem !important;
     transition: all 0.15s ease !important;
+    width: 100% !important;
 }
 
 [data-testid="stSidebar"] .stButton > button:hover {
@@ -91,7 +99,7 @@ CSS_STYLES = """
     border-radius: 6px;
     font-weight: 500;
     font-size: 0.875rem;
-    padding: 0.5rem 1rem;
+    padding: 0.45rem 0.9rem;
     transition: all 0.15s ease;
 }
 
@@ -113,19 +121,44 @@ div[data-testid="stButton"] button[kind="primary"]:hover {
     border-color: #4f46e5 !important;
 }
 
-/* Input Fields & Text Areas */
-.stTextInput input, .stTextArea textarea, .stSelectbox > div > div {
+/* BaseWeb Input Container & Password Visibility Fix */
+div[data-baseweb="input"] {
     background-color: #0f172a !important;
     border: 1px solid #334155 !important;
     border-radius: 6px !important;
     color: #f8fafc !important;
-    font-size: 0.9rem !important;
-    padding: 0.55rem 0.85rem !important;
 }
 
-.stTextInput input:focus, .stTextArea textarea:focus {
+div[data-baseweb="input"]:focus-within {
     border-color: #6366f1 !important;
     box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2) !important;
+}
+
+.stTextInput input, .stTextArea textarea {
+    background-color: transparent !important;
+    color: #f8fafc !important;
+    font-size: 0.9rem !important;
+    border: none !important;
+}
+
+/* Ensure Password Toggle Icon is Not Clipped */
+div[data-baseweb="input"] button {
+    background-color: transparent !important;
+    border: none !important;
+    color: #94a3b8 !important;
+    padding: 0 8px !important;
+    min-width: 32px !important;
+}
+
+/* Chat Input Bar Fixes */
+div[data-testid="stChatInput"] {
+    background-color: #0f172a !important;
+    border: 1px solid #334155 !important;
+    border-radius: 8px !important;
+}
+
+div[data-testid="stChatInput"]:focus-within {
+    border-color: #6366f1 !important;
 }
 
 /* Custom SaaS Cards */
@@ -133,7 +166,7 @@ div[data-testid="stButton"] button[kind="primary"]:hover {
     background-color: #0f172a;
     border: 1px solid #1e293b;
     border-radius: 8px;
-    padding: 1.25rem;
+    padding: 1.15rem;
     margin-bottom: 1rem;
 }
 
@@ -141,7 +174,7 @@ div[data-testid="stButton"] button[kind="primary"]:hover {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 0.75rem;
+    margin-bottom: 0.65rem;
 }
 
 .saas-title {
@@ -161,10 +194,10 @@ div[data-testid="stButton"] button[kind="primary"]:hover {
 .badge {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    padding: 3px 9px;
+    gap: 4px;
+    padding: 2px 8px;
     border-radius: 4px;
-    font-size: 0.75rem;
+    font-size: 0.725rem;
     font-weight: 500;
     background-color: #1e293b;
     color: #cbd5e1;
@@ -188,13 +221,13 @@ div[data-testid="stButton"] button[kind="primary"]:hover {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0.75rem 0;
+    padding: 0.5rem 0 0.85rem 0;
     border-bottom: 1px solid #1e293b;
-    margin-bottom: 1.75rem;
+    margin-bottom: 1.25rem;
 }
 
 .page-heading {
-    font-size: 1.65rem;
+    font-size: 1.45rem;
     font-weight: 700;
     color: #f8fafc;
     letter-spacing: -0.02em;
@@ -202,10 +235,10 @@ div[data-testid="stButton"] button[kind="primary"]:hover {
 }
 
 .page-description {
-    font-size: 0.875rem;
+    font-size: 0.85rem;
     color: #94a3b8;
-    margin-top: 0.35rem;
-    line-height: 1.5;
+    margin-top: 0.25rem;
+    line-height: 1.4;
 }
 
 /* Source Citation Cards */
@@ -214,26 +247,26 @@ div[data-testid="stButton"] button[kind="primary"]:hover {
     border: 1px solid #1e293b;
     border-left: 3px solid #6366f1;
     border-radius: 6px;
-    padding: 0.85rem 1rem;
-    margin-top: 0.65rem;
+    padding: 0.75rem 0.9rem;
+    margin-top: 0.5rem;
 }
 
 .source-title {
-    font-size: 0.875rem;
+    font-size: 0.85rem;
     font-weight: 600;
     color: #e2e8f0;
-    margin-bottom: 0.25rem;
+    margin-bottom: 0.2rem;
 }
 
 .source-snippet {
-    font-size: 0.825rem;
+    font-size: 0.8rem;
     color: #94a3b8;
-    line-height: 1.5;
+    line-height: 1.45;
 }
 
 /* Tab Overrides */
 .stTabs [data-baseweb="tab-list"] {
-    gap: 8px;
+    gap: 6px;
     background-color: transparent;
     border-bottom: 1px solid #1e293b;
 }
@@ -242,9 +275,9 @@ div[data-testid="stButton"] button[kind="primary"]:hover {
     background-color: transparent;
     border: none;
     color: #94a3b8;
-    font-size: 0.875rem;
+    font-size: 0.85rem;
     font-weight: 500;
-    padding: 0.5rem 1rem;
+    padding: 0.45rem 0.85rem;
 }
 
 .stTabs [aria-selected="true"] {

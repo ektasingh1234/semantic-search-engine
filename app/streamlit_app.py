@@ -1,733 +1,833 @@
-import sys
 import os
-import sqlite3
+import sys
 import time
 import uuid
+import datetime
+import sqlite3
 import streamlit as st
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
 
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+# Add project root to sys.path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.rag.rag_chain import load_chunks_from_db, build_rag_chain, hybrid_search
-from app.pdf_handler import process_pdf, ask_pdf
-from app.auth import (
-    register_user, login_user, init_users_db,
-    save_history_entry, fetch_user_history, clear_user_history,
-    save_research_note, fetch_user_saved_notes, delete_saved_note
-)
-from app.icons import render_icon
 from app.ui_styles import CSS_STYLES
+from app.icons import render_icon
+from app.auth import (
+    init_users_db,
+    login_user,
+    register_user,
+    save_history_entry,
+    fetch_user_history,
+    clear_user_history,
+    save_research_note,
+    fetch_user_saved_notes,
+    delete_saved_note,
+)
+from app.rag.rag_chain import load_chunks_from_db, build_rag_chain, hybrid_search, ask
+from app.pdf_handler import process_pdf, ask_pdf
 
-# Page Setup
+# -------------------------------------------------------------------
+# Page Config & Styles
+# -------------------------------------------------------------------
 st.set_page_config(
-    page_title="NeuroSearch — Knowledge Engine",
-    page_icon="https://raw.githubusercontent.com/feathericons/feather/master/icons/search.svg",
+    page_title="NeuroSearch | Hybrid Knowledge Engine",
+    page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Initialize DBs
+st.markdown(CSS_STYLES, unsafe_allow_html=True)
 init_users_db()
 
-# Apply Clean SaaS CSS
-st.markdown(CSS_STYLES, unsafe_allow_html=True)
-
-# Cached Backend Resources
-@st.cache_resource(show_spinner=False)
-def get_cached_components():
-    docs = load_chunks_from_db()
-    try:
-        llm, prompt, vectorstore = build_rag_chain()
-        return docs, llm, prompt, vectorstore, None
-    except Exception as err:
-        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-        vectorstore = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
-        return docs, None, None, vectorstore, str(err)
-
-# Session State Initialization
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-if "username" not in st.session_state:
-    st.session_state.username = ""
-if "user_email" not in st.session_state:
-    st.session_state.user_email = ""
+# -------------------------------------------------------------------
+# Session State Management
+# -------------------------------------------------------------------
+if "user" not in st.session_state:
+    st.session_state.user = None
 if "active_view" not in st.session_state:
-    st.session_state.active_view = "home"
+    st.session_state.active_view = "Home"
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 if "search_mode" not in st.session_state:
-    st.session_state.search_mode = "wiki"
-if "top_k" not in st.session_state:
-    st.session_state.top_k = 5
-if "history" not in st.session_state:
-    st.session_state.history = []
-if "saved_results" not in st.session_state:
-    st.session_state.saved_results = []
+    st.session_state.search_mode = "Wiki"
 if "pdf_vectorstore" not in st.session_state:
     st.session_state.pdf_vectorstore = None
-if "pdf_name" not in st.session_state:
-    st.session_state.pdf_name = None
-if "pending_query" not in st.session_state:
-    st.session_state.pending_query = ""
-if "current_search_result" not in st.session_state:
-    st.session_state.current_search_result = None
-if "target_source_title" not in st.session_state:
-    st.session_state.target_source_title = None
+if "pdf_file_name" not in st.session_state:
+    st.session_state.pdf_file_name = None
 
-# Helper DB query for Documents
-def get_all_db_documents():
-    conn = sqlite3.connect("data.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, title, url, content FROM documents ORDER BY title ASC")
-    rows = cursor.fetchall()
-    conn.close()
-    return [{"id": r[0], "title": r[1], "url": r[2], "content": r[3]} for r in rows]
+# Cache expensive resources
+@st.cache_resource
+def get_cached_wiki_docs():
+    return load_chunks_from_db()
 
+def get_knowledge_base_stats():
+    """Dynamically read article count and chunk count from knowledge base."""
+    try:
+        conn = sqlite3.connect("data.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM documents")
+        doc_count = cursor.fetchone()[0]
+        conn.close()
+    except Exception:
+        doc_count = 0
+        
+    try:
+        docs = get_cached_wiki_docs()
+        chunk_count = len(docs)
+    except Exception:
+        chunk_count = 0
+        
+    return doc_count, chunk_count
 
-# Load persistent data for user on login
-def load_user_persistent_data(username: str):
-    st.session_state.history = fetch_user_history(username)
-    st.session_state.saved_results = fetch_user_saved_notes(username)
-
-
-# ==============================================================================
-# AUTHENTICATION PAGE (Login / Register)
-# ==============================================================================
-if not st.session_state.logged_in:
-    st.markdown('<div style="height: 3rem;"></div>', unsafe_allow_html=True)
-    _, col_mid, _ = st.columns([1, 2.2, 1])
-
-    with col_mid:
-        st.markdown(f"""
-        <div class="saas-card" style="padding: 2.5rem; text-align: center;">
-            <div style="margin-bottom: 0.75rem;">
-                {render_icon("search", 28, "#818cf8")}
+# -------------------------------------------------------------------
+# Authentication Screen
+# -------------------------------------------------------------------
+def render_auth_page():
+    st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1, 1.8, 1])
+    
+    with col2:
+        st.markdown(
+            f"""
+            <div class="saas-card" style="text-align: center; padding: 2.5rem 2rem; border-color: #334155;">
+                <div style="font-size: 1.8rem; font-weight: 700; color: #f8fafc; letter-spacing: -0.02em; margin-bottom: 0.25rem;">
+                    NeuroSearch
+                </div>
+                <div style="font-size: 0.875rem; color: #94a3b8; margin-bottom: 1.5rem;">
+                    Hybrid Retrieval-Augmented Research Platform
+                </div>
             </div>
-            <div style="font-size: 1.5rem; font-weight: 700; color: #f8fafc; letter-spacing: -0.02em;">
-                NeuroSearch
-            </div>
-            <div style="font-size: 0.875rem; color: #94a3b8; margin-top: 0.25rem; margin-bottom: 1.5rem;">
-                Enterprise Hybrid Knowledge & Research Platform
-            </div>
-        """, unsafe_allow_html=True)
-
-        tab_login, tab_signup = st.tabs(["Sign In", "Create Account"])
-
+            """,
+            unsafe_allow_html=True
+        )
+        
+        tab_login, tab_register = st.tabs(["Sign In", "Create Account"])
+        
         with tab_login:
-            st.markdown('<div style="height: 0.75rem;"></div>', unsafe_allow_html=True)
-            login_user_input = st.text_input("Username", placeholder="Enter your username", key="auth_login_user")
-            login_pass_input = st.text_input("Password", placeholder="Enter your password", type="password", key="auth_login_pass")
-
-            if st.button("Sign In to Workspace", key="btn_login_submit", type="primary"):
-                if login_user_input and login_pass_input:
+            st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+            login_user_input = st.text_input("Username", key="auth_login_user")
+            login_pass_input = st.text_input("Password", type="password", key="auth_login_pass")
+            
+            if st.button("Sign In to Workspace", use_container_width=True, type="primary"):
+                if not login_user_input or not login_pass_input:
+                    st.error("Please provide both username and password.")
+                else:
                     res = login_user(login_user_input, login_pass_input)
                     if res["success"]:
-                        st.session_state.logged_in = True
-                        st.session_state.username = res["username"]
-                        st.session_state.user_email = res.get("email", f"{res['username']}@workspace.local")
-                        load_user_persistent_data(res["username"])
+                        st.session_state.user = {"username": res["username"], "email": res["email"]}
+                        st.success("Signed in successfully!")
+                        time.sleep(0.3)
                         st.rerun()
                     else:
                         st.error(res["message"])
+                        
+        with tab_register:
+            st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+            reg_user = st.text_input("Choose Username", key="auth_reg_user")
+            reg_email = st.text_input("Email Address", key="auth_reg_email")
+            reg_pass = st.text_input("Create Password", type="password", key="auth_reg_pass")
+            
+            if st.button("Create Account", use_container_width=True):
+                if not reg_user or not reg_email or not reg_pass:
+                    st.error("Please fill in all registration fields.")
                 else:
-                    st.warning("Please fill in both username and password.")
-
-        with tab_signup:
-            st.markdown('<div style="height: 0.75rem;"></div>', unsafe_allow_html=True)
-            reg_user_input = st.text_input("Choose Username", placeholder="Enter a username", key="auth_reg_user")
-            reg_email_input = st.text_input("Email Address", placeholder="name@organization.com", key="auth_reg_email")
-            reg_pass_input = st.text_input("Choose Password", placeholder="Minimum 6 characters", type="password", key="auth_reg_pass")
-            reg_confirm_input = st.text_input("Confirm Password", placeholder="Re-enter password", type="password", key="auth_reg_confirm")
-
-            if st.button("Create Account", key="btn_reg_submit", type="primary"):
-                if reg_user_input and reg_email_input and reg_pass_input and reg_confirm_input:
-                    if reg_pass_input != reg_confirm_input:
-                        st.error("Passwords do not match.")
-                    elif len(reg_pass_input) < 6:
-                        st.error("Password must be at least 6 characters long.")
+                    res = register_user(reg_user, reg_email, reg_pass)
+                    if res["success"]:
+                        st.success("Account created! You may now sign in.")
                     else:
-                        res = register_user(reg_user_input, reg_email_input, reg_pass_input)
-                        if res["success"]:
-                            st.success("Account created successfully! Please sign in.")
-                        else:
-                            st.error(res["message"])
-                else:
-                    st.warning("Please fill in all required fields.")
+                        st.error(res["message"])
 
-        st.markdown('</div>', unsafe_allow_html=True)
+if not st.session_state.user:
+    render_auth_page()
     st.stop()
 
-
-# Ensure persistent data is loaded for active user
-if not st.session_state.history and st.session_state.username:
-    st.session_state.history = fetch_user_history(st.session_state.username)
-if not st.session_state.saved_results and st.session_state.username:
-    st.session_state.saved_results = fetch_user_saved_notes(st.session_state.username)
-
-
-# ==============================================================================
-# SIDEBAR NAVIGATION & USER FOOTER
-# ==============================================================================
-with st.sidebar:
-    st.markdown(f"""
-    <div class="sidebar-header">
-        {render_icon("search", 22, "#818cf8")}
-        <div>
-            <div class="sidebar-brand">NeuroSearch</div>
-            <div class="sidebar-sub">Knowledge Platform</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    views = [
-        ("home", "Home", "home"),
-        ("search", "Search", "search"),
-        ("sources", "Sources", "sources"),
-        ("saved", "Saved", "saved"),
-        ("history", "Chat History", "history"),
-        ("pdf_upload", "Upload PDF", "upload"),
-        ("wiki_explorer", "Wiki Explorer", "explorer"),
-        ("settings", "Settings", "settings"),
-    ]
-
-    for v_id, v_label, v_icon in views:
-        is_active = st.session_state.active_view == v_id
-        btn_type = "primary" if is_active else "secondary"
-        if st.button(f"{v_label}", key=f"nav_btn_{v_id}", use_container_width=True, type=btn_type):
-            st.session_state.active_view = v_id
-            st.rerun()
-
-    st.markdown('<div style="margin-top: 1.5rem; border-top: 1px solid #1e293b; padding-top: 1rem;"></div>', unsafe_allow_html=True)
-
-    st.markdown(f"""
-    <div style="background-color: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 0.75rem 0.85rem; margin-bottom: 0.75rem;">
-        <div style="display: flex; align-items: center; justify-content: space-between;">
-            <div style="display: flex; align-items: center; gap: 8px;">
-                <div style="width: 30px; height: 30px; border-radius: 50%; background-color: #1e1b4b; border: 1px solid #4338ca; display: flex; align-items: center; justify-content: center; font-weight: 600; color: #a5b4fc; font-size: 0.75rem;">
-                    {st.session_state.username[:2].upper()}
-                </div>
+# -------------------------------------------------------------------
+# Sidebar Component
+# -------------------------------------------------------------------
+def render_sidebar():
+    with st.sidebar:
+        st.markdown(
+            f"""
+            <div class="sidebar-header">
                 <div>
-                    <div style="font-size: 0.825rem; font-weight: 600; color: #f8fafc;">{st.session_state.username}</div>
-                    <div style="font-size: 0.7rem; color: #64748b;">Enterprise Workspace</div>
+                    <div class="sidebar-brand">NeuroSearch</div>
+                    <div class="sidebar-sub">Enterprise Knowledge</div>
                 </div>
             </div>
-            <span class="badge badge-indigo">Active</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+            """,
+            unsafe_allow_html=True
+        )
+        
+        # New Chat Action Button (Clears active conversation completely)
+        if st.button("+ New Chat", use_container_width=True, type="primary"):
+            st.session_state.messages = []
+            st.session_state.active_view = "Search"
+            st.rerun()
+            
+        st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+        
+        nav_items = [
+            ("Home", "Home"),
+            ("Search Workspace", "Search"),
+            ("Indexed Sources", "Sources"),
+            ("Saved Answers", "Saved Answers"),
+            ("Chat History", "Chat History"),
+            ("Upload PDF Studio", "Upload PDF"),
+            ("Wiki Explorer", "Wiki Explorer"),
+            ("Platform Settings", "Settings"),
+        ]
+        
+        for label, view_key in nav_items:
+            is_active = st.session_state.active_view == view_key
+            button_kind = "primary" if is_active else "secondary"
+            if st.button(label, key=f"nav_{view_key}", use_container_width=True, type=button_kind):
+                st.session_state.active_view = view_key
+                st.rerun()
+                
+        st.markdown("<div style='height: 25px;'></div>", unsafe_allow_html=True)
+        st.markdown("<hr style='border-color: #1e293b; margin: 0 0 12px 0;'>", unsafe_allow_html=True)
+        
+        # User Profile Footer
+        st.markdown(
+            f"""
+            <div style="padding: 0 4px; margin-bottom: 8px;">
+                <div style="font-size: 0.85rem; font-weight: 600; color: #e2e8f0;">{st.session_state.user['username']}</div>
+                <div style="font-size: 0.725rem; color: #64748b;">{st.session_state.user['email']}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        
+        if st.button("Log Out", use_container_width=True):
+            st.session_state.user = None
+            st.session_state.messages = []
+            st.rerun()
 
-    if st.button("Sign Out", key="nav_logout_btn", use_container_width=True):
-        for k in list(st.session_state.keys()):
-            del st.session_state[k]
-        st.rerun()
+render_sidebar()
 
-
-# ==============================================================================
-# TOP HEADER BAR
-# ==============================================================================
-current_view_title = st.session_state.active_view.replace("_", " ").title()
-st.markdown(f"""
-<div class="top-header">
-    <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="color: #64748b; font-size: 0.85rem;">Workspace</span>
-        <span style="color: #334155; font-size: 0.85rem;">/</span>
-        <span style="color: #f8fafc; font-size: 0.85rem; font-weight: 600;">{current_view_title}</span>
-    </div>
-    <div style="display: flex; align-items: center; gap: 10px;">
-        <span class="badge badge-indigo">
-            {render_icon("cpu", 13, "#a5b4fc")} Groq LLaMA3
-        </span>
-        <span class="badge badge-slate">
-            {render_icon("database", 13, "#94a3b8")} BM25 + FAISS
-        </span>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-
-# Core Execution Helper for Search
-def execute_search_query(query_text: str, search_mode: str):
-    if not query_text.strip():
-        return
-
-    st.session_state.pending_query = ""
-    t0 = time.time()
-
-    docs, llm, prompt, vectorstore, err_msg = get_cached_components()
-
-    if search_mode == "pdf":
-        if not st.session_state.pdf_vectorstore:
-            st.error("No PDF document loaded. Please upload a PDF file in the Upload PDF section.")
-            return
-        if not llm:
-            st.error(f"GROQ_API_KEY environment variable is not configured. ({err_msg})")
-            return
-        res = ask_pdf(query_text, st.session_state.pdf_vectorstore, llm, prompt)
-        answer = res["answer"]
-        sources = res["sources"]
-    else:
-        k_val = st.session_state.get("top_k", 5)
-        results = hybrid_search(query_text, docs, vectorstore, k=k_val)
-        sources = list(set([d.metadata["title"] for d in results]))
-
-        if llm:
-            context = "\n\n".join([d.page_content for d in results])
-            chain = prompt | llm
-            response = chain.invoke({"context": context, "question": query_text})
-            answer = response.content
-        else:
-            answer = "GROQ_API_KEY environment variable is not configured. Here are the top retrieved sources:\n\n" + \
-                     "\n\n".join([f"**{d.metadata['title']}**:\n{d.page_content[:300]}..." for d in results])
-
-    elapsed = round(time.time() - t0, 2)
-
-    result_payload = {
+# -------------------------------------------------------------------
+# RAG Execution Helper
+# -------------------------------------------------------------------
+def execute_rag_query(query_text: str):
+    user_name = st.session_state.user["username"]
+    search_mode = st.session_state.search_mode
+    
+    # 1. Add User Message
+    st.session_state.messages.append({
+        "id": str(uuid.uuid4()),
+        "role": "user",
+        "content": query_text,
+        "timestamp": datetime.datetime.now().strftime("%H:%M:%S")
+    })
+    
+    start_time = time.time()
+    
+    # 2. History Context for Follow-ups
+    history_context = ""
+    if len(st.session_state.messages) > 1:
+        prev_user_msgs = [m["content"] for m in st.session_state.messages[:-1] if m["role"] == "user"]
+        if prev_user_msgs:
+            history_context = prev_user_msgs[-1]
+            
+    # 3. Perform Retrieval & LLM Generation
+    with st.status("Searching knowledge base & generating answer...", expanded=True) as status:
+        st.write("Initializing retrieval pipeline...")
+        
+        if search_mode == "Wiki":
+            st.write("Performing hybrid BM25 + FAISS search...")
+            res = ask(query_text, history_context=history_context)
+            answer = res["answer"]
+            sources = res["sources"]
+            rich_sources = res.get("rich_sources", [])
+            raw_docs = res.get("raw_docs", [])
+        else: # PDF Mode
+            st.write("Querying attached PDF document vector store...")
+            if not st.session_state.pdf_vectorstore:
+                answer = "No PDF document attached. Please upload a PDF file using the attachment uploader above."
+                sources = []
+                rich_sources = []
+                raw_docs = []
+            else:
+                groq_key = os.getenv("GROQ_API_KEY")
+                llm, prompt, _ = build_rag_chain(api_key=groq_key) if groq_key else (None, None, None)
+                res = ask_pdf(query_text, st.session_state.pdf_vectorstore, llm, prompt)
+                answer = res["answer"]
+                sources = res["sources"]
+                rich_sources = [{"title": f"{st.session_state.pdf_file_name} ({s})", "url": "", "snippet": ""} for s in sources]
+                raw_docs = []
+                    
+        st.write("Response generated!")
+        status.update(label="Query complete", state="complete", expanded=False)
+        
+    latency = round(time.time() - start_time, 2)
+    
+    # 4. Save Entry to History Database
+    entry = {
         "id": str(uuid.uuid4()),
         "query": query_text,
         "answer": answer,
         "sources": sources,
-        "time": elapsed,
+        "time": latency,
         "mode": search_mode,
-        "timestamp": time.strftime("%b %d, %H:%M")
+        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
-
-    # Save to SQLite database history
-    save_history_entry(st.session_state.username, result_payload)
-    st.session_state.history = fetch_user_history(st.session_state.username)
-
-    st.session_state.current_search_result = result_payload
-    st.session_state.active_view = "search"
-    st.rerun()
-
-
-# Check if pending query triggered from home topic click
-if st.session_state.pending_query:
-    execute_search_query(st.session_state.pending_query, st.session_state.search_mode)
-
-
-# ==============================================================================
-# VIEW 1: HOME / DASHBOARD
-# ==============================================================================
-if st.session_state.active_view == "home":
-    st.markdown("""
-    <div style="margin-bottom: 1.75rem;">
-        <h1 class="page-heading" style="font-size: 1.85rem;">Search the knowledge you need.</h1>
-        <p class="page-description">Find relevant information across indexed Wikipedia articles, research topics, and uploaded PDF documents.</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Integrated Search Card
-    st.markdown('<div class="saas-card">', unsafe_allow_html=True)
+    save_history_entry(user_name, entry)
     
-    col_mode1, col_mode2, _ = st.columns([1.5, 1.5, 4])
+    # 5. Append Assistant Message (Sources bound ONLY to this specific message object)
+    st.session_state.messages.append({
+        "id": entry["id"],
+        "role": "assistant",
+        "content": answer,
+        "sources": sources,
+        "rich_sources": rich_sources,
+        "raw_docs": raw_docs,
+        "latency": latency,
+        "mode": search_mode,
+        "timestamp": entry["timestamp"]
+    })
+
+# -------------------------------------------------------------------
+# VIEW: Home Dashboard
+# -------------------------------------------------------------------
+def render_home_view():
+    st.markdown(
+        """
+        <div class="top-header">
+            <div>
+                <h1 class="page-heading">Platform Overview</h1>
+                <div class="page-description">Enterprise hybrid knowledge discovery & neural document search dashboard.</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+    
+    # Read Dynamic Article and Chunk Counts
+    doc_count, chunk_count = get_knowledge_base_stats()
+    username = st.session_state.user["username"]
+    notes_count = len(fetch_user_saved_notes(username))
+    has_groq_key = bool(os.getenv("GROQ_API_KEY"))
+    
+    # Metric Summary Cards
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    with col_m1:
+        st.markdown(
+            f"""
+            <div class="saas-card">
+                <div style="font-size: 0.75rem; color: #94a3b8; font-weight: 500;">Knowledge Base</div>
+                <div style="font-size: 1.4rem; font-weight: 700; color: #f8fafc; margin-top: 4px;">{doc_count} articles</div>
+                <div style="font-size: 0.725rem; color: #818cf8; margin-top: 4px;">{chunk_count} searchable chunks</div>
+                <div style="font-size: 0.7rem; color: #64748b; margin-top: 6px; line-height: 1.2;">Pre-indexed Wikipedia knowledge available for hybrid search.</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+    with col_m2:
+        st.markdown(
+            """
+            <div class="saas-card">
+                <div style="font-size: 0.75rem; color: #94a3b8; font-weight: 500;">Vector Engine</div>
+                <div style="font-size: 1.4rem; font-weight: 700; color: #f8fafc; margin-top: 4px;">FAISS + BM25</div>
+                <div style="font-size: 0.725rem; color: #34d399; margin-top: 4px;">Hybrid RRF Merging</div>
+                <div style="font-size: 0.7rem; color: #64748b; margin-top: 6px; line-height: 1.2;">Dense vector + sparse keyword retrieval.</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+    with col_m3:
+        status_badge = '<span style="color: #34d399;">● Connected</span>' if has_groq_key else '<span style="color: #fb7185;">○ Not configured</span>'
+        st.markdown(
+            f"""
+            <div class="saas-card">
+                <div style="font-size: 0.75rem; color: #94a3b8; font-weight: 500;">Synthesis Model</div>
+                <div style="font-size: 1.4rem; font-weight: 700; color: #f8fafc; margin-top: 4px;">Llama 3.3 70B</div>
+                <div style="font-size: 0.725rem; margin-top: 4px;">{status_badge}</div>
+                <div style="font-size: 0.7rem; color: #64748b; margin-top: 6px; line-height: 1.2;">Groq High-Speed API (groq/compound).</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+    with col_m4:
+        st.markdown(
+            f"""
+            <div class="saas-card">
+                <div style="font-size: 0.75rem; color: #94a3b8; font-weight: 500;">Saved Research</div>
+                <div style="font-size: 1.4rem; font-weight: 700; color: #f8fafc; margin-top: 4px;">{notes_count} notes</div>
+                <div style="font-size: 0.725rem; color: #f43f5e; margin-top: 4px;">Local SQLite Store</div>
+                <div style="font-size: 0.7rem; color: #64748b; margin-top: 6px; line-height: 1.2;">Bookmarked citations and answers.</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+    
+    # Launch Workspace Card (Clean Call-to-Action)
+    st.markdown(
+        """
+        <div class="saas-card" style="padding: 2rem; border-color: #3730a3; background: linear-gradient(180deg, #0f172a 0%, #1e1b4b 100%);">
+            <div style="font-size: 1.3rem; font-weight: 700; color: #f8fafc; margin-bottom: 0.4rem;">
+                Start Conversational Research
+            </div>
+            <div style="font-size: 0.85rem; color: #cbd5e1; max-width: 650px; margin-bottom: 1.25rem; line-height: 1.5;">
+                Ask questions across pre-indexed Wikipedia knowledge stores or upload custom PDF research papers for instant document retrieval.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+    
+    col_c1, col_c2 = st.columns(2)
+    with col_c1:
+        if st.button("Launch Wikipedia Hybrid Search", use_container_width=True, type="primary"):
+            st.session_state.search_mode = "Wiki"
+            st.session_state.active_view = "Search"
+            st.rerun()
+    with col_c2:
+        if st.button("Attach & Search PDF Document", use_container_width=True):
+            st.session_state.search_mode = "PDF"
+            st.session_state.active_view = "Search"
+            st.rerun()
+
+    st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
+    
+    # Recent Query Log Overview (Summary only, NO retrieved sources or active answers!)
+    st.markdown("<div style='font-size: 1.05rem; font-weight: 600; color: #f8fafc; margin-bottom: 10px;'>Recent Research Activity</div>", unsafe_allow_html=True)
+    recent_history = fetch_user_history(username)[:3]
+    if not recent_history:
+        st.info("No research activity recorded yet. Launch Search to get started!")
+    else:
+        for item in recent_history:
+            st.markdown(
+                f"""
+                <div class="saas-card">
+                    <div class="saas-card-header">
+                        <div class="saas-title">{item['query']}</div>
+                        <span class="badge badge-slate">{item['mode']} Mode</span>
+                    </div>
+                    <div style="font-size: 0.8rem; color: #94a3b8;">Executed: {item['timestamp']} ({item['time']}s latency)</div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+# -------------------------------------------------------------------
+# VIEW: Conversational Search Workspace
+# -------------------------------------------------------------------
+def render_search_workspace():
+    st.markdown(
+        """
+        <div class="top-header">
+            <div>
+                <h1 class="page-heading">Search Workspace</h1>
+                <div class="page-description">Ask questions, attach PDFs, and explore cited research responses.</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+    
+    # Search Mode & Controls
+    col_mode1, col_mode2, col_clear = st.columns([1.5, 1.5, 5])
     with col_mode1:
-        if st.button("Wiki Knowledge", type="primary" if st.session_state.search_mode == "wiki" else "secondary", key="home_mode_wiki"):
-            st.session_state.search_mode = "wiki"
+        if st.button("Wiki Mode", type="primary" if st.session_state.search_mode == "Wiki" else "secondary", use_container_width=True):
+            st.session_state.search_mode = "Wiki"
             st.rerun()
     with col_mode2:
-        if st.button("PDF Document", type="primary" if st.session_state.search_mode == "pdf" else "secondary", key="home_mode_pdf"):
-            st.session_state.search_mode = "pdf"
+        if st.button("PDF Mode", type="primary" if st.session_state.search_mode == "PDF" else "secondary", use_container_width=True):
+            st.session_state.search_mode = "PDF"
             st.rerun()
+    with col_clear:
+        if len(st.session_state.messages) > 0:
+            if st.button("Clear Conversation", type="secondary"):
+                st.session_state.messages = []
+                st.rerun()
+                
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+    
+    # PDF Attachment Uploader (Shown when in PDF Mode)
+    if st.session_state.search_mode == "PDF":
+        with st.expander("PDF Document Attachment", expanded=not bool(st.session_state.pdf_vectorstore)):
+            pdf_file = st.file_uploader("Upload PDF file to index for this session", type=["pdf"], key="search_pdf_attach")
+            if pdf_file is not None:
+                if st.session_state.pdf_file_name != pdf_file.name:
+                    with st.spinner("Embedding PDF document into vector memory..."):
+                        vs = process_pdf(pdf_file)
+                        st.session_state.pdf_vectorstore = vs
+                        st.session_state.pdf_file_name = pdf_file.name
+                        st.success(f"Attached & Embedded PDF: {pdf_file.name}")
+                        
+            if st.session_state.pdf_vectorstore:
+                st.info(f"Attached Document: **{st.session_state.pdf_file_name}** (Ready for search)")
 
-    st.markdown('<div style="height: 0.75rem;"></div>', unsafe_allow_html=True)
-
-    c_input, c_btn = st.columns([5.5, 1])
-    with c_input:
-        placeholder = "Ask about your uploaded PDF document..." if st.session_state.search_mode == "pdf" else "Ask anything about Machine Learning, AI, LLMs..."
-        home_query = st.text_input("Global Search Input", placeholder=placeholder, label_visibility="collapsed", key="input_home_query")
-    with c_btn:
-        home_submit = st.button("Search", key="btn_home_search", type="primary")
-
-    if home_submit and home_query:
-        execute_search_query(home_query, st.session_state.search_mode)
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # Topic Exploration Grid
-    st.markdown("""
-    <div style="margin-top: 2rem; margin-bottom: 1rem; display: flex; align-items: center; justify-content: space-between;">
-        <div style="font-size: 1.05rem; font-weight: 600; color: #f8fafc;">Explore Core Topics</div>
-        <div style="font-size: 0.8rem; color: #64748b;">Click any topic to query immediately</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    topics = [
-        ("Artificial Intelligence", "Concepts, history, and foundational models", "What is Artificial Intelligence?"),
-        ("Machine Learning", "Algorithms, supervised learning, and evaluation", "Explain Machine Learning fundamentals"),
-        ("Deep Learning", "Neural network architectures and deep networks", "Explain deep learning and neural networks"),
-        ("Natural Language Processing", "LLMs, text analysis, and semantic understanding", "What is Natural Language Processing?"),
-        ("Transformers", "Self-attention mechanisms and transformer models", "How do transformer models work?"),
-        ("Retrieval-Augmented Generation", "RAG architectures, vector DBs, and hybrid search", "What is Retrieval-Augmented Generation?"),
-    ]
-
-    t_col1, t_col2 = st.columns(2)
-    for idx, (t_name, t_desc, t_q) in enumerate(topics):
-        col_target = t_col1 if idx % 2 == 0 else t_col2
-        with col_target:
-            st.markdown(f"""
-            <div style="background-color: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem;">
-                <div style="font-size: 0.95rem; font-weight: 600; color: #f8fafc;">{t_name}</div>
-                <div style="font-size: 0.825rem; color: #94a3b8; margin-top: 0.25rem; margin-bottom: 0.75rem;">{t_desc}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            if st.button(f"Search {t_name}", key=f"topic_btn_{idx}"):
-                execute_search_query(t_q, "wiki")
-
-    # Recent Searches
-    if st.session_state.history:
-        st.markdown("""
-        <div style="margin-top: 2rem; margin-bottom: 0.75rem; font-size: 1.05rem; font-weight: 600; color: #f8fafc;">
-            Recent Searches
-        </div>
-        """, unsafe_allow_html=True)
-
-        for idx, h_item in enumerate(st.session_state.history[:4]):
-            col_h1, col_h2 = st.columns([5, 1])
-            with col_h1:
-                st.markdown(f"""
-                <div style="background-color: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 0.65rem 0.85rem; margin-bottom: 0.5rem; display: flex; align-items: center; justify-content: space-between;">
-                    <div style="font-size: 0.875rem; color: #e2e8f0;">{h_item['query']}</div>
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                        <span class="badge badge-slate">{h_item['mode'].upper()}</span>
-                        <span style="font-size: 0.75rem; color: #64748b;">{h_item['timestamp']}</span>
-                    </div>
+    # Empty State (Shown ONLY when no active conversation messages)
+    if not st.session_state.messages:
+        st.markdown(
+            f"""
+            <div class="saas-card" style="text-align: center; padding: 2.25rem 1.5rem; border-style: dashed; margin-top: 0.5rem;">
+                <div style="font-size: 1.15rem; font-weight: 600; color: #f8fafc; margin-bottom: 0.5rem;">
+                    {st.session_state.search_mode} Research Assistant
                 </div>
-                """, unsafe_allow_html=True)
-            with col_h2:
-                if st.button("Re-run", key=f"rerun_home_{idx}"):
-                    execute_search_query(h_item['query'], h_item['mode'])
-
-
-# ==============================================================================
-# VIEW 2: SEARCH RESULTS
-# ==============================================================================
-elif st.session_state.active_view == "search":
-    st.markdown("""
-    <div style="margin-bottom: 1.25rem;">
-        <h1 class="page-heading">Search Results & Synthesis</h1>
-        <p class="page-description">Source-backed answers powered by hybrid BM25 + FAISS retrieval.</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Search Bar
-    st.markdown('<div class="saas-card">', unsafe_allow_html=True)
-    c_input, c_btn = st.columns([5.5, 1])
-    with c_input:
-        search_query_val = st.text_input("Query Input", value=st.session_state.current_search_result["query"] if st.session_state.current_search_result else "", label_visibility="collapsed", key="input_results_query")
-    with c_btn:
-        search_submit = st.button("Search", key="btn_results_search", type="primary")
-
-    if search_submit and search_query_val:
-        execute_search_query(search_query_val, st.session_state.search_mode)
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    res = st.session_state.current_search_result
-    if res:
-        # Answer Card
-        st.markdown(f"""
-        <div class="saas-card">
-            <div class="saas-card-header">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <span style="font-size: 0.95rem; font-weight: 600; color: #f8fafc;">Synthesized Answer</span>
-                    <span class="badge badge-indigo">Groq LLaMA3</span>
+                <div style="font-size: 0.85rem; color: #94a3b8; max-width: 520px; margin: 0 auto 1.25rem auto;">
+                    Submit a query below. Search operates via hybrid vector + keyword matching.
                 </div>
-                <span style="font-size: 0.75rem; color: #64748b;">Latency: {res['time']}s</span>
             </div>
-            <div style="font-size: 0.925rem; line-height: 1.7; color: #cbd5e1; margin-bottom: 1rem;">
-                {res['answer']}
+            """,
+            unsafe_allow_html=True
+        )
+        
+        st.markdown("<div style='font-size: 0.825rem; font-weight: 600; color: #94a3b8; margin-bottom: 8px;'>Suggested Prompts:</div>", unsafe_allow_html=True)
+        col_p1, col_p2, col_p3 = st.columns(3)
+        with col_p1:
+            if st.button("What is Retrieval-Augmented Generation?", use_container_width=True):
+                execute_rag_query("What is Retrieval-Augmented Generation?")
+                st.rerun()
+        with col_p2:
+            if st.button("How do Artificial Neural Networks work?", use_container_width=True):
+                execute_rag_query("How do Artificial Neural Networks work?")
+                st.rerun()
+        with col_p3:
+            if st.button("Explain Machine Learning algorithms", use_container_width=True):
+                execute_rag_query("Explain Machine Learning algorithms")
+                st.rerun()
+
+    # Render Conversation Messages (Retrieved Sources appear ONLY underneath assistant messages!)
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            
+            if msg["role"] == "assistant":
+                if msg.get("sources"):
+                    st.markdown("<div style='font-size: 0.825rem; font-weight: 600; color: #e2e8f0; margin-top: 10px;'>Retrieved Sources:</div>", unsafe_allow_html=True)
+                    for src in msg.get("rich_sources", []):
+                        st.markdown(
+                            f"""
+                            <div class="source-card">
+                                <div class="source-title">{src['title']}</div>
+                                <div class="source-snippet">{src['snippet']}</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+                        
+                col_act1, col_act2, _ = st.columns([1.2, 1.8, 5])
+                with col_act1:
+                    if st.button("Save Note", key=f"save_{msg['id']}"):
+                        note = {
+                            "id": msg["id"],
+                            "query": next((m["content"] for m in reversed(st.session_state.messages) if m["role"] == "user"), "Research Answer"),
+                            "answer": msg["content"],
+                            "sources": msg.get("sources", []),
+                            "mode": msg.get("mode", "Wiki"),
+                            "timestamp": msg.get("timestamp", "")
+                        }
+                        save_research_note(st.session_state.user["username"], note)
+                        st.success("Saved to Research Notes!")
+                with col_act2:
+                    with st.expander("View Raw Context"):
+                        for doc_text in msg.get("raw_docs", []):
+                            st.text(doc_text)
+                            st.markdown("---")
+
+    # Bottom Chat Input
+    user_input = st.chat_input("Ask a research question or follow-up...")
+    if user_input:
+        execute_rag_query(user_input)
+        st.rerun()
+
+# -------------------------------------------------------------------
+# VIEW: Sources
+# -------------------------------------------------------------------
+def render_sources_view():
+    st.markdown(
+        """
+        <div class="top-header">
+            <div>
+                <h1 class="page-heading">Indexed Knowledge Base</h1>
+                <div class="page-description">Pre-indexed Wikipedia articles stored in SQLite & FAISS vector store.</div>
             </div>
         </div>
-        """, unsafe_allow_html=True)
-
-        col_act1, col_act2, _ = st.columns([1.5, 1.5, 4])
-        with col_act1:
-            if st.button("Save Result", key="btn_save_current_res"):
-                if not any(s["id"] == res["id"] for s in st.session_state.saved_results):
-                    save_research_note(st.session_state.username, res)
-                    st.session_state.saved_results = fetch_user_saved_notes(st.session_state.username)
-                    st.success("Saved to your persistent workspace research notes!")
-                else:
-                    st.info("Already saved in your notes.")
-        with col_act2:
-            if st.button("Copy Markdown", key="btn_copy_ans"):
-                st.code(res['answer'], language="markdown")
-
-        # Source Citations
-        st.markdown(f"""
-        <div style="margin-top: 2rem; margin-bottom: 0.75rem; display: flex; align-items: center; justify-content: space-between;">
-            <div style="font-size: 1.05rem; font-weight: 600; color: #f8fafc;">Retrieved Sources ({len(res['sources'])})</div>
-            <div style="font-size: 0.8rem; color: #64748b;">Verified context chunks</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        for s_idx, src in enumerate(res["sources"]):
-            col_src1, col_src2 = st.columns([5, 1.2])
-            with col_src1:
-                st.markdown(f"""
-                <div class="source-card">
-                    <div class="source-title">{src}</div>
-                    <div class="source-snippet">Cited in response synthesis for verification and source trace.</div>
-                </div>
-                """, unsafe_allow_html=True)
-            with col_src2:
-                if st.button("Inspect Source", key=f"btn_inspect_src_{s_idx}"):
-                    st.session_state.target_source_title = src
-                    st.session_state.active_view = "wiki_explorer"
-                    st.rerun()
-    else:
-        st.info("Enter a query above or choose a topic from Home to generate answers.")
-
-
-# ==============================================================================
-# VIEW 3: SOURCES
-# ==============================================================================
-elif st.session_state.active_view == "sources":
-    st.markdown("""
-    <div style="margin-bottom: 1.25rem;">
-        <h1 class="page-heading">Indexed Knowledge Base</h1>
-        <p class="page-description">Document repository and vector embeddings used for hybrid retrieval.</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    docs = get_all_db_documents()
-
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
-        st.markdown(f"""
-        <div class="saas-card" style="text-align: center;">
-            <div style="font-size: 1.5rem; font-weight: 700; color: #f8fafc;">{len(docs)}</div>
-            <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.2rem;">Indexed Articles</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with m2:
-        st.markdown("""
-        <div class="saas-card" style="text-align: center;">
-            <div style="font-size: 1.5rem; font-weight: 700; color: #f8fafc;">756</div>
-            <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.2rem;">FAISS Vector Chunks</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with m3:
-        st.markdown("""
-        <div class="saas-card" style="text-align: center;">
-            <div style="font-size: 0.9rem; font-weight: 600; color: #a5b4fc; margin-top: 0.4rem;">all-MiniLM-L6-v2</div>
-            <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.2rem;">Embedding Model</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with m4:
-        st.markdown("""
-        <div class="saas-card" style="text-align: center;">
-            <div style="font-size: 0.9rem; font-weight: 600; color: #a5b4fc; margin-top: 0.4rem;">BM25 + FAISS (RRF)</div>
-            <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.2rem;">Retrieval Engine</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    src_filter = st.text_input("Filter Sources", placeholder="Search document title or URL...", key="src_filter_input")
-
-    filtered_docs = [d for d in docs if src_filter.lower() in d["title"].lower() or src_filter.lower() in d["url"].lower()] if src_filter else docs
-
-    for d in filtered_docs:
-        with st.expander(f"{d['title']} ({len(d['content'])} characters)"):
-            st.markdown(f"**Source URL:** [{d['url']}]({d['url']})")
-            st.markdown("**Content Excerpt:**")
-            st.text(d['content'][:800] + "..." if len(d['content']) > 800 else d['content'])
-
-
-# ==============================================================================
-# VIEW 4: SAVED ANSWERS
-# ==============================================================================
-elif st.session_state.active_view == "saved":
-    st.markdown("""
-    <div style="margin-bottom: 1.25rem;">
-        <h1 class="page-heading">Saved Results & Research Notes</h1>
-        <p class="page-description">Bookmarked answers and cited references saved permanently in your account.</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    if not st.session_state.saved_results:
-        st.markdown("""
-        <div class="saas-card" style="text-align: center; padding: 3rem 1.5rem;">
-            <div style="font-size: 1.1rem; font-weight: 600; color: #f8fafc; margin-bottom: 0.5rem;">No saved notes yet</div>
-            <div style="font-size: 0.875rem; color: #94a3b8;">Bookmark answers from the search results page to store them permanently here.</div>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        for idx, item in enumerate(st.session_state.saved_results):
-            st.markdown(f"""
+        """,
+        unsafe_allow_html=True
+    )
+    
+    conn = sqlite3.connect("data.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT url, title, content FROM documents")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    st.markdown(f"<div style='font-size: 0.875rem; color: #94a3b8; margin-bottom: 1rem;'>Total Articles: <b>{len(rows)}</b></div>", unsafe_allow_html=True)
+    
+    for url, title, content in rows:
+        st.markdown(
+            f"""
             <div class="saas-card">
                 <div class="saas-card-header">
-                    <div style="font-size: 1.05rem; font-weight: 600; color: #f8fafc;">{item['query']}</div>
-                    <span class="badge badge-indigo">{item['mode'].upper()}</span>
+                    <div class="saas-title">{title}</div>
+                    <span class="badge badge-indigo">SQLite + FAISS</span>
                 </div>
-                <div style="font-size: 0.9rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 0.75rem;">
-                    {item['answer']}
+                <div class="saas-subtitle" style="margin-bottom: 0.75rem;">
+                    {content[:280]}...
                 </div>
-                <div style="font-size: 0.75rem; color: #64748b;">
-                    Saved on: {item['timestamp']} · Sources: {", ".join(item['sources'])}
+                <div style="font-size: 0.8rem;">
+                    <a href="{url}" target="_blank" style="color: #818cf8; text-decoration: none;">View Original Article &rarr;</a>
                 </div>
             </div>
-            """, unsafe_allow_html=True)
+            """,
+            unsafe_allow_html=True
+        )
 
-            col_s1, col_s2, _ = st.columns([1.5, 1.5, 4])
-            with col_s1:
-                if st.button("Copy Text", key=f"btn_copy_saved_{idx}"):
-                    st.code(item['answer'], language="markdown")
-            with col_s2:
-                if st.button("Remove Note", key=f"btn_rem_saved_{idx}"):
-                    delete_saved_note(st.session_state.username, item["id"])
-                    st.session_state.saved_results = fetch_user_saved_notes(st.session_state.username)
-                    st.rerun()
-
-
-# ==============================================================================
-# VIEW 5: CHAT HISTORY
-# ==============================================================================
-elif st.session_state.active_view == "history":
-    st.markdown("""
-    <div style="margin-bottom: 1.25rem;">
-        <h1 class="page-heading">Query History</h1>
-        <p class="page-description">Review past search queries and retrieval sessions.</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    if not st.session_state.history:
-        st.markdown("""
-        <div class="saas-card" style="text-align: center; padding: 3rem 1.5rem;">
-            <div style="font-size: 1.1rem; font-weight: 600; color: #f8fafc; margin-bottom: 0.5rem;">No query history yet</div>
-            <div style="font-size: 0.875rem; color: #94a3b8;">Your query sessions and generated answers will appear here.</div>
+# -------------------------------------------------------------------
+# VIEW: Saved Answers
+# -------------------------------------------------------------------
+def render_saved_answers_view():
+    st.markdown(
+        """
+        <div class="top-header">
+            <div>
+                <h1 class="page-heading">Saved Research Notes</h1>
+                <div class="page-description">Bookmarked research answers stored in user database.</div>
+            </div>
         </div>
-        """, unsafe_allow_html=True)
-    else:
-        if st.button("Clear All History", key="btn_clear_all_history"):
-            clear_user_history(st.session_state.username)
-            st.session_state.history = []
+        """,
+        unsafe_allow_html=True
+    )
+    
+    username = st.session_state.user["username"]
+    notes = fetch_user_saved_notes(username)
+    
+    if not notes:
+        st.info("No saved research notes yet. Click 'Save Note' under any search response to store it here.")
+        return
+        
+    for note in notes:
+        st.markdown(
+            f"""
+            <div class="saas-card">
+                <div class="saas-card-header">
+                    <div class="saas-title">{note['query']}</div>
+                    <span class="badge badge-indigo">{note['mode']} Mode</span>
+                </div>
+                <div class="saas-subtitle" style="margin-bottom: 0.75rem; white-space: pre-wrap;">
+                    {note['answer']}
+                </div>
+                <div style="font-size: 0.725rem; color: #64748b;">Saved: {note['timestamp']}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        col_rem, _ = st.columns([1.5, 6])
+        with col_rem:
+            if st.button("Remove Note", key=f"del_note_{note['id']}"):
+                delete_saved_note(username, note["id"])
+                st.success("Note removed.")
+                st.rerun()
+        st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+
+# -------------------------------------------------------------------
+# VIEW: Chat History
+# -------------------------------------------------------------------
+def render_chat_history_view():
+    st.markdown(
+        """
+        <div class="top-header">
+            <div>
+                <h1 class="page-heading">Search History</h1>
+                <div class="page-description">Persistent log of all executed queries and latency metrics.</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+    
+    username = st.session_state.user["username"]
+    history = fetch_user_history(username)
+    
+    if not history:
+        st.info("No query history recorded yet.")
+        return
+        
+    if st.button("Clear Complete History", type="secondary"):
+        clear_user_history(username)
+        st.success("History cleared.")
+        st.rerun()
+        
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+    
+    for item in history:
+        st.markdown(
+            f"""
+            <div class="saas-card">
+                <div class="saas-card-header">
+                    <div class="saas-title">{item['query']}</div>
+                    <div>
+                        <span class="badge badge-slate">{item['mode']} Mode</span>
+                        <span class="badge badge-indigo">{item['time']}s</span>
+                    </div>
+                </div>
+                <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 0.4rem;">
+                    Sources: {', '.join(item['sources']) if item['sources'] else 'None'}
+                </div>
+                <div style="font-size: 0.725rem; color: #64748b;">Timestamp: {item['timestamp']}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        col_rerun, _ = st.columns([1.5, 6])
+        with col_rerun:
+            if st.button("Rerun Query", key=f"rerun_{item['id']}"):
+                st.session_state.active_view = "Search"
+                execute_rag_query(item['query'])
+                st.rerun()
+
+# -------------------------------------------------------------------
+# VIEW: Upload PDF Studio
+# -------------------------------------------------------------------
+def render_upload_pdf_view():
+    st.markdown(
+        """
+        <div class="top-header">
+            <div>
+                <h1 class="page-heading">PDF Processing Studio</h1>
+                <div class="page-description">Upload, chunk, embed, and manage custom PDF document vector indices.</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+    
+    uploaded_file = st.file_uploader("Select PDF document to index", type=["pdf"], key="studio_pdf_uploader")
+    
+    if uploaded_file is not None:
+        if st.session_state.pdf_file_name != uploaded_file.name:
+            with st.spinner("Extracting text, chunking pages, and generating embeddings..."):
+                vs = process_pdf(uploaded_file)
+                st.session_state.pdf_vectorstore = vs
+                st.session_state.pdf_file_name = uploaded_file.name
+                st.success(f"Successfully processed PDF: {uploaded_file.name}")
+                
+    if st.session_state.pdf_vectorstore:
+        st.markdown(
+            f"""
+            <div class="saas-card" style="margin-top: 1rem;">
+                <div class="saas-card-header">
+                    <div class="saas-title">Active PDF Document</div>
+                    <span class="badge badge-indigo">FAISS Index Active</span>
+                </div>
+                <div class="saas-subtitle">
+                    File Name: <b>{st.session_state.pdf_file_name}</b><br>
+                    Embedding Model: sentence-transformers/all-MiniLM-L6-v2
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        if st.button("Launch PDF Search Workspace", type="primary"):
+            st.session_state.search_mode = "PDF"
+            st.session_state.active_view = "Search"
             st.rerun()
 
-        st.markdown('<div style="height: 0.5rem;"></div>', unsafe_allow_html=True)
-
-        for idx, h in enumerate(st.session_state.history):
-            with st.expander(f"{h['query']} — ({h['timestamp']})"):
-                st.markdown(f"**Mode:** {h['mode'].upper()} | **Latency:** {h['time']}s")
-                st.markdown("**Answer:**")
-                st.markdown(h['answer'])
-                st.markdown("**Sources:** " + ", ".join(h['sources']))
-
-                if st.button("Re-open Query Result", key=f"btn_reopen_hist_{idx}"):
-                    st.session_state.current_search_result = h
-                    st.session_state.active_view = "search"
-                    st.rerun()
-
-
-# ==============================================================================
-# VIEW 6: UPLOAD PDF
-# ==============================================================================
-elif st.session_state.active_view == "pdf_upload":
-    st.markdown("""
-    <div style="margin-bottom: 1.25rem;">
-        <h1 class="page-heading">PDF Document Research</h1>
-        <p class="page-description">Upload custom PDF documents to perform semantic vector search and RAG answering.</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    uploaded_pdf = st.file_uploader("Upload PDF Document", type=["pdf"], key="pdf_file_uploader")
-
-    if uploaded_pdf:
-        if st.session_state.pdf_name != uploaded_pdf.name:
-            with st.spinner("Processing & embedding PDF document..."):
-                st.session_state.pdf_vectorstore = process_pdf(uploaded_pdf)
-                st.session_state.pdf_name = uploaded_pdf.name
-            st.success(f"PDF '{uploaded_pdf.name}' processed and ready for questions!")
-
-    if st.session_state.pdf_name:
-        st.markdown(f"""
-        <div class="saas-card" style="border-left: 3px solid #6366f1;">
-            <div style="font-size: 0.95rem; font-weight: 600; color: #f8fafc;">Active Document: {st.session_state.pdf_name}</div>
-            <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.25rem;">FAISS Vector Index active in memory</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        pdf_query = st.text_input("Ask a question about this PDF", placeholder="e.g. What are the key findings in section 3?", key="pdf_ask_input")
-        if st.button("Ask PDF", key="btn_ask_pdf_submit", type="primary") and pdf_query:
-            execute_search_query(pdf_query, "pdf")
-
-
-# ==============================================================================
-# VIEW 7: WIKI EXPLORER
-# ==============================================================================
-elif st.session_state.active_view == "wiki_explorer":
-    st.markdown("""
-    <div style="margin-bottom: 1.25rem;">
-        <h1 class="page-heading">Wikipedia Knowledge Explorer</h1>
-        <p class="page-description">Inspect curated AI & ML Wikipedia articles stored in the local database.</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    docs = get_all_db_documents()
-    doc_titles = [d["title"] for d in docs]
-
-    default_index = 0
-    if st.session_state.target_source_title in doc_titles:
-        default_index = doc_titles.index(st.session_state.target_source_title)
-        st.session_state.target_source_title = None
-
-    selected_title = st.selectbox("Select Wikipedia Article to Inspect", options=doc_titles, index=default_index, key="wiki_select_title")
-    selected_doc = next((d for d in docs if d["title"] == selected_title), None)
-
-    if selected_doc:
-        st.markdown(f"""
-        <div class="saas-card">
-            <div class="saas-card-header">
-                <div style="font-size: 1.2rem; font-weight: 700; color: #f8fafc;">{selected_doc['title']}</div>
-                <span class="badge badge-indigo">{len(selected_doc['content'])} chars</span>
-            </div>
-            <div style="font-size: 0.825rem; color: #818cf8; margin-bottom: 1rem;">
-                URL: <a href="{selected_doc['url']}" target="_blank" style="color: #818cf8;">{selected_doc['url']}</a>
+# -------------------------------------------------------------------
+# VIEW: Wiki Explorer
+# -------------------------------------------------------------------
+def render_wiki_explorer_view():
+    st.markdown(
+        """
+        <div class="top-header">
+            <div>
+                <h1 class="page-heading">Wiki Article Explorer</h1>
+                <div class="page-description">Inspect full text content of indexed articles in SQLite data.db.</div>
             </div>
         </div>
-        """, unsafe_allow_html=True)
-
-        if st.button(f"Search RAG for '{selected_doc['title']}'", key="btn_search_this_wiki"):
-            execute_search_query(f"Explain {selected_doc['title']}", "wiki")
-
-        st.markdown("### Article Content Preview")
-        st.text_area("Full Article Text", value=selected_doc['content'], height=350, key="wiki_text_area")
-
-
-# ==============================================================================
-# VIEW 8: SETTINGS
-# ==============================================================================
-elif st.session_state.active_view == "settings":
-    st.markdown("""
-    <div style="margin-bottom: 1.25rem;">
-        <h1 class="page-heading">Workspace Settings</h1>
-        <p class="page-description">Configure retrieval parameters, model options, and view system health.</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown('<div class="saas-card">', unsafe_allow_html=True)
-    st.markdown('<div class="saas-title">Retrieval Parameters</div>', unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True
+    )
     
-    new_top_k = st.slider("Top-K Context Chunks to Retrieve", min_value=3, max_value=10, value=st.session_state.top_k, step=1, key="settings_top_k_slider")
-    st.session_state.top_k = new_top_k
+    conn = sqlite3.connect("data.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT title, url, content FROM documents")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    titles = [r[0] for r in rows]
+    selected_title = st.selectbox("Select Article", titles)
+    
+    if selected_title:
+        article = next(r for r in rows if r[0] == selected_title)
+        st.markdown(f"### {article[0]}")
+        st.markdown(f"[View Wikipedia Source Page]({article[1]})")
+        st.markdown("---")
+        st.text_area("Full Document Text", article[2], height=420)
 
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown("""
-    <div class="saas-card">
-        <div class="saas-title">Model & System Information</div>
-        <div style="font-size: 0.875rem; color: #cbd5e1; margin-top: 0.5rem; line-height: 1.8;">
-            • <b>LLM Generation:</b> Groq LLaMA3 (llama-3.3-70b-versatile)<br>
-            • <b>Dense Vector Embeddings:</b> sentence-transformers/all-MiniLM-L6-v2<br>
-            • <b>Hybrid Retrieval:</b> BM25 (Rank-BM25) + FAISS CPU (Reciprocal Rank Fusion)<br>
-            • <b>Storage:</b> SQLite (data.db & users.db)<br>
-            • <b>Deployment:</b> Single-service Docker on Hugging Face Spaces (Port 7860)
+# -------------------------------------------------------------------
+# VIEW: Platform Settings
+# -------------------------------------------------------------------
+def render_settings_view():
+    st.markdown(
+        """
+        <div class="top-header">
+            <div>
+                <h1 class="page-heading">Platform Settings</h1>
+                <div class="page-description">AI engine status, environment configuration, and system parameters.</div>
+            </div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True
+    )
+    
+    has_groq_key = bool(os.getenv("GROQ_API_KEY"))
+    
+    st.markdown("### AI Configuration")
+    
+    if has_groq_key:
+        status_card = """
+        <div class="saas-card" style="border-left: 3px solid #10b981;">
+            <div class="saas-card-header">
+                <div class="saas-title">Groq LLM Engine</div>
+                <span class="badge" style="background-color: #064e3b; color: #34d399; border-color: #047857;">● Connected</span>
+            </div>
+            <div class="saas-subtitle" style="line-height: 1.6;">
+                Provider: <b>Groq</b><br>
+                Model: <b>Llama 3.3 70B (groq/compound)</b><br>
+                Credentials: <b>Securely configured through the application environment.</b>
+            </div>
+        </div>
+        """
+    else:
+        status_card = """
+        <div class="saas-card" style="border-left: 3px solid #f43f5e;">
+            <div class="saas-card-header">
+                <div class="saas-title">Groq LLM Engine</div>
+                <span class="badge" style="background-color: #4c0519; color: #fb7185; border-color: #be123c;">○ Not configured</span>
+            </div>
+            <div class="saas-subtitle" style="line-height: 1.6;">
+                Provider: <b>Groq</b><br>
+                Model: <b>Llama 3.3 70B (groq/compound)</b><br>
+                AI generation is unavailable because the application administrator has not configured Groq credentials.
+            </div>
+        </div>
+        """
+    st.markdown(status_card, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    st.markdown("### System Architecture")
+    st.markdown("Retrieval Strategy: `Hybrid (FAISS Vector + BM25 Keyword)`")
+    st.markdown("Embedding Model: `sentence-transformers/all-MiniLM-L6-v2` (384 dimensions)")
+    st.markdown("Databases: `data.db` (Knowledge Store) & `users.db` (User Sessions & History)")
 
-    st.markdown("""
-    <div class="saas-card">
-        <div class="saas-title">Account Details</div>
-    """, unsafe_allow_html=True)
-    st.write(f"**Username:** {st.session_state.username}")
-    st.write(f"**Email:** {st.session_state.user_email}")
-    st.markdown('</div>', unsafe_allow_html=True)
+# -------------------------------------------------------------------
+# Router Dispatcher
+# -------------------------------------------------------------------
+view_map = {
+    "Home": render_home_view,
+    "Search": render_search_workspace,
+    "Sources": render_sources_view,
+    "Saved Answers": render_saved_answers_view,
+    "Chat History": render_chat_history_view,
+    "Upload PDF": render_upload_pdf_view,
+    "Wiki Explorer": render_wiki_explorer_view,
+    "Settings": render_settings_view,
+}
+
+current_renderer = view_map.get(st.session_state.active_view, render_home_view)
+current_renderer()

@@ -53,7 +53,7 @@ def hybrid_search(query, docs, vectorstore, k=5):
     return merged[:k]
 
 
-def build_rag_chain():
+def build_rag_chain(api_key=None, model_name=None):
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
@@ -63,41 +63,84 @@ def build_rag_chain():
         allow_dangerous_deserialization=True
     )
 
-    llm = ChatGroq(
-        model="llama-3.3-70b-versatile",
-        api_key=os.getenv("GROQ_API_KEY"),
-        temperature=0
-    )
+    groq_key = api_key or os.getenv("GROQ_API_KEY")
+    if not groq_key:
+        llm = None
+    else:
+        target_model = model_name or os.getenv("GROQ_MODEL", "groq/compound")
+        llm = ChatGroq(
+            model=target_model,
+            api_key=groq_key,
+            temperature=0.2
+        )
+
 
     prompt = ChatPromptTemplate.from_template(
-        "You are a helpful assistant. Answer the question using ONLY the context below.\n"
-        "At the end, cite the sources used.\n\n"
+        "You are a professional research assistant. Answer the question accurately using ONLY the context provided below.\n"
+        "Be concise, clear, and structured.\n\n"
         "Context:\n{context}\n\n"
         "Question: {question}\n\n"
-        "Answer with citations:"
+        "Answer:"
     )
 
     return llm, prompt, vectorstore
 
 
-def ask(query):
+def ask(query, api_key=None, history_context="", model_name=None):
     docs = load_chunks_from_db()
-    llm, prompt, vectorstore = build_rag_chain()
+    llm, prompt, vectorstore = build_rag_chain(api_key=api_key, model_name=model_name)
 
-    results = hybrid_search(query, docs, vectorstore, k=5)
+
+    # For follow-ups, resolve query context if history_context is provided
+    search_query = query
+    if history_context and len(history_context.strip()) > 0:
+        search_query = f"{history_context} {query}"
+
+    results = hybrid_search(search_query, docs, vectorstore, k=5)
 
     context = "\n\n".join([d.page_content for d in results])
-    sources = list(set([d.metadata["title"] for d in results]))
+    
+    # Detailed sources list
+    rich_sources = []
+    seen_titles = set()
+    for d in results:
+        t = d.metadata.get("title", "Document")
+        if t not in seen_titles:
+            seen_titles.add(t)
+            rich_sources.append({
+                "title": t,
+                "url": d.metadata.get("url", ""),
+                "snippet": d.page_content[:250] + ("..." if len(d.page_content) > 250 else "")
+            })
 
-    chain = prompt | llm
-    response = chain.invoke({
-        "context": context,
-        "question": query
-    })
+    simple_sources = list(seen_titles)
+
+    if not llm:
+        answer_text = (
+            "No Groq API Key was detected. Please provide your GROQ_API_KEY in the Settings view "
+            "or set it as an environment variable to enable live LLM response synthesis.\n\n"
+            "Below are the relevant documents retrieved from the hybrid index for your query:"
+        )
+    else:
+        full_question = query
+        if history_context:
+            full_question = f"[Prior Context: {history_context}]\nQuestion: {query}"
+        
+        chain = prompt | llm
+        try:
+            response = chain.invoke({
+                "context": context,
+                "question": full_question
+            })
+            answer_text = response.content
+        except Exception as e:
+            answer_text = f"LLM Generation Error: {str(e)}\n\nRetrieved context was extracted successfully."
 
     return {
-        "answer": response.content,
-        "sources": sources
+        "answer": answer_text,
+        "sources": simple_sources,
+        "rich_sources": rich_sources,
+        "raw_docs": [d.page_content for d in results]
     }
 
 
@@ -107,4 +150,4 @@ if __name__ == "__main__":
     print(result["answer"])
     print("\nSources:")
     for s in result["sources"]:
-        print(f"  - {s}")
+        print(f"  - {s}")
