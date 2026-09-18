@@ -11,8 +11,12 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 load_dotenv()
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+DATA_DB_PATH = os.path.join(PROJECT_ROOT, "data.db")
+FAISS_PATH = os.path.join(PROJECT_ROOT, "faiss_index")
+
 def load_chunks_from_db():
-    conn = sqlite3.connect("data.db")
+    conn = sqlite3.connect(DATA_DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT url, title, content FROM documents")
     rows = cursor.fetchall()
@@ -58,10 +62,11 @@ def build_rag_chain(api_key=None, model_name=None):
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
     vectorstore = FAISS.load_local(
-        "faiss_index",
+        FAISS_PATH,
         embeddings,
         allow_dangerous_deserialization=True
     )
+
 
     groq_key = api_key or os.getenv("GROQ_API_KEY")
     if not groq_key:

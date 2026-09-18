@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -5,12 +6,17 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+DATA_DB_PATH = os.path.join(PROJECT_ROOT, "data.db")
+FAISS_PATH = os.path.join(PROJECT_ROOT, "faiss_index")
+
 def load_chunks_from_db():
-    conn = sqlite3.connect("data.db")
+    conn = sqlite3.connect(DATA_DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT url, title, content FROM documents")
     rows = cursor.fetchall()
     conn.close()
+
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=512,
@@ -56,11 +62,12 @@ def build_vectorstore():
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
     vectorstore = FAISS.load_local(
-        "faiss_index",
+        FAISS_PATH,
         embeddings,
         allow_dangerous_deserialization=True
     )
     return vectorstore
+
 
 if __name__ == "__main__":
     docs = load_chunks_from_db()

@@ -59,15 +59,18 @@ if "pdf_file_name" not in st.session_state:
 def get_cached_wiki_docs():
     return load_chunks_from_db()
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DATA_DB_PATH = os.path.join(PROJECT_ROOT, "data.db")
+
 def get_knowledge_base_stats():
     """Dynamically read article count and chunk count from knowledge base."""
     try:
-        conn = sqlite3.connect("data.db")
+        conn = sqlite3.connect(DATA_DB_PATH)
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM documents")
         doc_count = cursor.fetchone()[0]
         conn.close()
-    except Exception:
+    except Exception as e:
         doc_count = 0
         
     try:
@@ -77,6 +80,7 @@ def get_knowledge_base_stats():
         chunk_count = 0
         
     return doc_count, chunk_count
+
 
 # -------------------------------------------------------------------
 # Authentication Screen
@@ -550,11 +554,12 @@ def render_sources_view():
         unsafe_allow_html=True
     )
     
-    conn = sqlite3.connect("data.db")
+    conn = sqlite3.connect(DATA_DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT url, title, content FROM documents")
     rows = cursor.fetchall()
     conn.close()
+
     
     st.markdown(f"<div style='font-size: 0.875rem; color: #94a3b8; margin-bottom: 1rem;'>Total Articles: <b>{len(rows)}</b></div>", unsafe_allow_html=True)
     
@@ -743,11 +748,12 @@ def render_wiki_explorer_view():
         unsafe_allow_html=True
     )
     
-    conn = sqlite3.connect("data.db")
+    conn = sqlite3.connect(DATA_DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT title, url, content FROM documents")
     rows = cursor.fetchall()
     conn.close()
+
     
     titles = [r[0] for r in rows]
     selected_title = st.selectbox("Select Article", titles)

@@ -3,7 +3,9 @@ import hashlib
 import json
 import os
 
-DB_PATH = "users.db"
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DB_PATH = os.path.join(PROJECT_ROOT, "users.db")
+
 
 def init_users_db():
     conn = sqlite3.connect(DB_PATH)
