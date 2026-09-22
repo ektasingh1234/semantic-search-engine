@@ -102,7 +102,7 @@ def build_rag_chain(api_key=None, model_name=None):
     return llm, prompt, vectorstore
 
 
-def invoke_groq_fallback(prompt_text, context, question, api_key=None, model_name=None):
+def invoke_groq_fallback(context, question, api_key=None, model_name=None):
     """Resilient direct REST API fallback to Groq endpoint if ChatGroq fails or encounters network drops."""
     import requests
     groq_key = api_key or os.getenv("GROQ_API_KEY")
@@ -182,7 +182,7 @@ def ask(query, api_key=None, history_context="", model_name=None):
                 answer_text = response.content
             except Exception as e:
                 # Direct REST fallback on network/connection issues
-                answer_text = invoke_groq_fallback(prompt.template, context, full_question, api_key=groq_key, model_name=model_name)
+                answer_text = invoke_groq_fallback(context, full_question, api_key=groq_key, model_name=model_name)
                 if not answer_text:
                     err_msg = str(e)
                     if "404" in err_msg or "model_not_found" in err_msg:
