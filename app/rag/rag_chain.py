@@ -67,18 +67,29 @@ def build_rag_chain(api_key=None, model_name=None):
         allow_dangerous_deserialization=True
     )
 
-
     groq_key = api_key or os.getenv("GROQ_API_KEY")
+    target_model = model_name or os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
+
     if not groq_key:
         llm = None
     else:
-        target_model = model_name or os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
-        llm = ChatGroq(
-            model=target_model,
-            api_key=groq_key,
-            temperature=0.2
-        )
-
+        try:
+            import httpx
+            http_client = httpx.Client(timeout=60.0, follow_redirects=True)
+            llm = ChatGroq(
+                model=target_model,
+                api_key=groq_key,
+                temperature=0.2,
+                request_timeout=60.0,
+                max_retries=3,
+                http_client=http_client
+            )
+        except Exception:
+            llm = ChatGroq(
+                model=target_model,
+                api_key=groq_key,
+                temperature=0.2
+            )
 
     prompt = ChatPromptTemplate.from_template(
         "You are a professional research assistant. Answer the question accurately using ONLY the context provided below.\n"
@@ -91,21 +102,49 @@ def build_rag_chain(api_key=None, model_name=None):
     return llm, prompt, vectorstore
 
 
+def invoke_groq_fallback(prompt_text, context, question, api_key=None, model_name=None):
+    """Resilient direct REST API fallback to Groq endpoint if ChatGroq fails or encounters network drops."""
+    import requests
+    groq_key = api_key or os.getenv("GROQ_API_KEY")
+    if not groq_key:
+        return None
+    target_model = model_name or os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
+    
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {groq_key}",
+        "Content-Type": "application/json"
+    }
+    full_user_content = f"Context:\n{context}\n\nQuestion: {question}\n\nAnswer:"
+    payload = {
+        "model": target_model,
+        "messages": [
+            {"role": "system", "content": "You are a professional research assistant. Answer the question accurately using ONLY the context provided below. Be concise, clear, and structured."},
+            {"role": "user", "content": full_user_content}
+        ],
+        "temperature": 0.2
+    }
+    try:
+        r = requests.post(url, json=payload, headers=headers, timeout=30.0)
+        if r.status_code == 200:
+            data = r.json()
+            return data["choices"][0]["message"]["content"]
+    except Exception:
+        pass
+    return None
+
+
 def ask(query, api_key=None, history_context="", model_name=None):
     docs = load_chunks_from_db()
     llm, prompt, vectorstore = build_rag_chain(api_key=api_key, model_name=model_name)
 
-
-    # For follow-ups, resolve query context if history_context is provided
     search_query = query
     if history_context and len(history_context.strip()) > 0:
         search_query = f"{history_context} {query}"
 
     results = hybrid_search(search_query, docs, vectorstore, k=5)
-
     context = "\n\n".join([d.page_content for d in results])
     
-    # Detailed sources list
     rich_sources = []
     seen_titles = set()
     for d in results:
@@ -119,11 +158,12 @@ def ask(query, api_key=None, history_context="", model_name=None):
             })
 
     simple_sources = list(seen_titles)
+    groq_key = api_key or os.getenv("GROQ_API_KEY")
 
-    if not llm:
+    if not groq_key:
         answer_text = (
-            "No Groq API Key was detected. Please provide your GROQ_API_KEY in the Settings view "
-            "or set it as an environment variable to enable live LLM response synthesis.\n\n"
+            "No Groq API Key was detected. Please set your GROQ_API_KEY as a Hugging Face Space Secret "
+            "or environment variable to enable live LLM response synthesis.\n\n"
             "Below are the relevant documents retrieved from the hybrid index for your query:"
         )
     else:
@@ -131,21 +171,27 @@ def ask(query, api_key=None, history_context="", model_name=None):
         if history_context:
             full_question = f"[Prior Context: {history_context}]\nQuestion: {query}"
         
-        chain = prompt | llm
-        try:
-            response = chain.invoke({
-                "context": context,
-                "question": full_question
-            })
-            answer_text = response.content
-        except Exception as e:
-            err_msg = str(e)
-            if "404" in err_msg or "model_not_found" in err_msg:
-                answer_text = f"Groq API Error: Model unavailable or not found. Please check model configuration.\n\nRetrieved context was extracted successfully."
-            elif "401" in err_msg or "authentication" in err_msg.lower():
-                answer_text = "Groq API Error: Authentication failed (401). Check GROQ_API_KEY in settings or environment.\n\nRetrieved context was extracted successfully."
-            else:
-                answer_text = f"LLM Generation Error: {err_msg}\n\nRetrieved context was extracted successfully."
+        answer_text = None
+        if llm:
+            chain = prompt | llm
+            try:
+                response = chain.invoke({
+                    "context": context,
+                    "question": full_question
+                })
+                answer_text = response.content
+            except Exception as e:
+                # Direct REST fallback on network/connection issues
+                answer_text = invoke_groq_fallback(prompt.template, context, full_question, api_key=groq_key, model_name=model_name)
+                if not answer_text:
+                    err_msg = str(e)
+                    if "404" in err_msg or "model_not_found" in err_msg:
+                        answer_text = "Groq API Error: Model unavailable or not found. Please check model configuration."
+                    elif "401" in err_msg or "authentication" in err_msg.lower():
+                        answer_text = "Groq API Error: Authentication failed (401). Check GROQ_API_KEY in environment."
+                    else:
+                        answer_text = f"LLM Generation Error: {err_msg}"
+                    answer_text += "\n\nRetrieved context was extracted successfully."
 
     return {
         "answer": answer_text,
