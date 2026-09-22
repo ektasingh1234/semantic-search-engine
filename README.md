@@ -12,17 +12,20 @@ pinned: false
 
 A production-grade RAG-powered semantic search engine built with LangChain, FAISS, BM25, and Groq LLaMA3.
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue)
-![LangChain](https://img.shields.io/badge/LangChain-Latest-green)
-![Groq](https://img.shields.io/badge/Groq-LLaMA3-purple)
-![Streamlit](https://img.shields.io/badge/Streamlit-Latest-red)
+![Python](https://img.shields.io/badge/Python-3.11-blue)
+![LangChain](https://img.shields.io/badge/LangChain-v1.3-green)
+![Groq](https://img.shields.io/badge/Groq-Qwen%203.8%2027B-orange)
+![Streamlit](https://img.shields.io/badge/Streamlit-v1.57-red)
+[![Hugging Face Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-blue)](https://huggingface.co/spaces/singhekta/semantic-search-engine)
 
 ## 🚀 Live Demo
-[👉 Click here to try NeuroSearch](https://huggingface.co/spaces/singhekta/semantic-search-engine)
+
+🤗 **Hugging Face Space**: [https://huggingface.co/spaces/singhekta/semantic-search-engine](https://huggingface.co/spaces/singhekta/semantic-search-engine)  
+⚡ **Direct Web App**: [https://singhekta-semantic-search-engine.hf.space](https://singhekta-semantic-search-engine.hf.space)
 
 ## 📌 What it does
 - **Hybrid Retrieval** — BM25 keyword search + FAISS vector search merged with RRF
-- **RAG Answer Synthesis** — Groq LLaMA3 generates cited answers from retrieved chunks
+- **RAG Answer Synthesis** — Groq High-Speed API (Qwen 3.8 27B) generates cited answers from retrieved chunks
 - **PDF Chat** — Upload any PDF and ask questions about it
 - **Auth System** — Self-registration + login with SQLite
 - **Chat History** — Session-based conversation memory
@@ -36,7 +39,7 @@ A production-grade RAG-powered semantic search engine built with LangChain, FAIS
 | Embeddings | sentence-transformers/all-MiniLM-L6-v2 |
 | Vector Store | FAISS |
 | Keyword Search | BM25 (rank-bm25) |
-| LLM | Groq LLaMA3-8b |
+| LLM | Groq Qwen 3.8 27B |
 | Orchestration | LangChain |
 | Auth | SQLite + SHA256 |
 | Deployment | HuggingFace Spaces |
