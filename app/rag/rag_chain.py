@@ -160,10 +160,10 @@ def ask(query, api_key=None, history_context="", model_name=None):
     simple_sources = list(seen_titles)
     groq_key = api_key or os.getenv("GROQ_API_KEY")
 
-    if not groq_key:
+    if not groq_key or len(groq_key.strip()) == 0:
         answer_text = (
-            "No Groq API Key was detected. Please set your GROQ_API_KEY as a Hugging Face Space Secret "
-            "or environment variable to enable live LLM response synthesis.\n\n"
+            "No Groq API Key was detected in environment variables. "
+            "Please add your GROQ_API_KEY under Hugging Face Space Settings -> Variables and secrets -> Secrets and restart the Space.\n\n"
             "Below are the relevant documents retrieved from the hybrid index for your query:"
         )
     else:
@@ -185,12 +185,13 @@ def ask(query, api_key=None, history_context="", model_name=None):
                 answer_text = invoke_groq_fallback(context, full_question, api_key=groq_key, model_name=model_name)
                 if not answer_text:
                     err_msg = str(e)
+                    key_len = len(groq_key.strip()) if groq_key else 0
                     if "404" in err_msg or "model_not_found" in err_msg:
-                        answer_text = "Groq API Error: Model unavailable or not found. Please check model configuration."
-                    elif "401" in err_msg or "authentication" in err_msg.lower():
-                        answer_text = "Groq API Error: Authentication failed (401). Check GROQ_API_KEY in environment."
+                        answer_text = f"Groq API Error: Model '{model_name or 'qwen/qwen3.8-27b'}' unavailable or not found."
+                    elif "401" in err_msg or "authentication" in err_msg.lower() or "invalid_api_key" in err_msg:
+                        answer_text = "Groq API Error: Authentication failed (401 Invalid API Key). Please click 'Replace' on GROQ_API_KEY in Hugging Face Space Secrets and enter a fresh valid key."
                     else:
-                        answer_text = f"LLM Generation Error: {err_msg}"
+                        answer_text = f"LLM Generation Error: {err_msg} (GROQ_API_KEY detected, length={key_len})"
                     answer_text += "\n\nRetrieved context was extracted successfully."
 
     return {
