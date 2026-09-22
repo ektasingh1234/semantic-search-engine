@@ -343,9 +343,9 @@ def render_home_view():
             f"""
             <div class="saas-card">
                 <div style="font-size: 0.75rem; color: #94a3b8; font-weight: 500;">Synthesis Model</div>
-                <div style="font-size: 1.4rem; font-weight: 700; color: #f8fafc; margin-top: 4px;">Llama 3.3 70B</div>
+                <div style="font-size: 1.4rem; font-weight: 700; color: #f8fafc; margin-top: 4px;">Qwen 3.8 27B</div>
                 <div style="font-size: 0.725rem; margin-top: 4px;">{status_badge}</div>
-                <div style="font-size: 0.7rem; color: #64748b; margin-top: 6px; line-height: 1.2;">Groq High-Speed API (groq/compound).</div>
+                <div style="font-size: 0.7rem; color: #64748b; margin-top: 6px; line-height: 1.2;">Groq High-Speed API (qwen/qwen3.8-27b).</div>
             </div>
             """,
             unsafe_allow_html=True
@@ -794,7 +794,7 @@ def render_settings_view():
             </div>
             <div class="saas-subtitle" style="line-height: 1.6;">
                 Provider: <b>Groq</b><br>
-                Model: <b>Llama 3.3 70B (groq/compound)</b><br>
+                Model: <b>Qwen 3.8 27B (qwen/qwen3.8-27b)</b><br>
                 Credentials: <b>Securely configured through the application environment.</b>
             </div>
         </div>
@@ -808,7 +808,7 @@ def render_settings_view():
             </div>
             <div class="saas-subtitle" style="line-height: 1.6;">
                 Provider: <b>Groq</b><br>
-                Model: <b>Llama 3.3 70B (groq/compound)</b><br>
+                Model: <b>Qwen 3.8 27B (qwen/qwen3.8-27b)</b><br>
                 AI generation is unavailable because the application administrator has not configured Groq credentials.
             </div>
         </div>

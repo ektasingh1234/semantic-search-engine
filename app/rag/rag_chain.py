@@ -72,7 +72,7 @@ def build_rag_chain(api_key=None, model_name=None):
     if not groq_key:
         llm = None
     else:
-        target_model = model_name or os.getenv("GROQ_MODEL", "groq/compound")
+        target_model = model_name or os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
         llm = ChatGroq(
             model=target_model,
             api_key=groq_key,
@@ -139,7 +139,13 @@ def ask(query, api_key=None, history_context="", model_name=None):
             })
             answer_text = response.content
         except Exception as e:
-            answer_text = f"LLM Generation Error: {str(e)}\n\nRetrieved context was extracted successfully."
+            err_msg = str(e)
+            if "404" in err_msg or "model_not_found" in err_msg:
+                answer_text = f"Groq API Error: Model unavailable or not found. Please check model configuration.\n\nRetrieved context was extracted successfully."
+            elif "401" in err_msg or "authentication" in err_msg.lower():
+                answer_text = "Groq API Error: Authentication failed (401). Check GROQ_API_KEY in settings or environment.\n\nRetrieved context was extracted successfully."
+            else:
+                answer_text = f"LLM Generation Error: {err_msg}\n\nRetrieved context was extracted successfully."
 
     return {
         "answer": answer_text,
