@@ -75,10 +75,10 @@ def build_rag_chain(api_key=None, model_name=None):
     else:
         try:
             import httpx
-            http_client = httpx.Client(timeout=60.0, follow_redirects=True)
+            http_client = httpx.Client(timeout=60.0, follow_redirects=True, trust_env=False)
             llm = ChatGroq(
                 model=target_model,
-                api_key=groq_key,
+                api_key=groq_key.strip(),
                 temperature=0.2,
                 request_timeout=60.0,
                 max_retries=3,
@@ -87,7 +87,7 @@ def build_rag_chain(api_key=None, model_name=None):
         except Exception:
             llm = ChatGroq(
                 model=target_model,
-                api_key=groq_key,
+                api_key=groq_key.strip(),
                 temperature=0.2
             )
 
@@ -103,17 +103,18 @@ def build_rag_chain(api_key=None, model_name=None):
 
 
 def invoke_groq_fallback(context, question, api_key=None, model_name=None):
-    """Resilient direct REST API fallback to Groq endpoint if ChatGroq fails or encounters network drops."""
+    """Resilient direct REST API fallback to Groq endpoint bypassing system proxies."""
     import requests
     groq_key = api_key or os.getenv("GROQ_API_KEY")
     if not groq_key:
-        return None
+        return None, "No GROQ_API_KEY present in environment."
     target_model = model_name or os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
     
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {groq_key}",
-        "Content-Type": "application/json"
+        "Authorization": f"Bearer {groq_key.strip()}",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
     full_user_content = f"Context:\n{context}\n\nQuestion: {question}\n\nAnswer:"
     payload = {
@@ -125,13 +126,20 @@ def invoke_groq_fallback(context, question, api_key=None, model_name=None):
         "temperature": 0.2
     }
     try:
-        r = requests.post(url, json=payload, headers=headers, timeout=30.0)
+        r = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            proxies={"http": None, "https": None},
+            timeout=30.0
+        )
         if r.status_code == 200:
             data = r.json()
-            return data["choices"][0]["message"]["content"]
-    except Exception:
-        pass
-    return None
+            return data["choices"][0]["message"]["content"], None
+        else:
+            return None, f"REST HTTP {r.status_code}: {r.text[:200]}"
+    except Exception as fallback_err:
+        return None, f"REST Exception ({type(fallback_err).__name__}): {str(fallback_err)}"
 
 
 def ask(query, api_key=None, history_context="", model_name=None):
@@ -181,9 +189,11 @@ def ask(query, api_key=None, history_context="", model_name=None):
                 })
                 answer_text = response.content
             except Exception as e:
-                # Direct REST fallback on network/connection issues
-                answer_text = invoke_groq_fallback(context, full_question, api_key=groq_key, model_name=model_name)
-                if not answer_text:
+                # Direct REST fallback bypassing proxies on network/connection issues
+                fallback_content, fallback_err = invoke_groq_fallback(context, full_question, api_key=groq_key, model_name=model_name)
+                if fallback_content:
+                    answer_text = fallback_content
+                else:
                     err_msg = str(e)
                     key_len = len(groq_key.strip()) if groq_key else 0
                     if "404" in err_msg or "model_not_found" in err_msg:
@@ -191,7 +201,7 @@ def ask(query, api_key=None, history_context="", model_name=None):
                     elif "401" in err_msg or "authentication" in err_msg.lower() or "invalid_api_key" in err_msg:
                         answer_text = "Groq API Error: Authentication failed (401 Invalid API Key). Please click 'Replace' on GROQ_API_KEY in Hugging Face Space Secrets and enter a fresh valid key."
                     else:
-                        answer_text = f"LLM Generation Error: {err_msg} (GROQ_API_KEY detected, length={key_len})"
+                        answer_text = f"LLM Generation Error: {err_msg} | Fallback Detail: {fallback_err} (GROQ_API_KEY length={key_len})"
                     answer_text += "\n\nRetrieved context was extracted successfully."
 
     return {
